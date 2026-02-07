@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -384,6 +385,14 @@ func main() {
 	}
 	if cfg == nil {
 		cfg = &config.Config{}
+	}
+
+	// Override port from PORT environment variable (required for platforms like Heroku).
+	if portEnv := os.Getenv("PORT"); portEnv != "" {
+		if p, errConv := strconv.Atoi(portEnv); errConv == nil && p > 0 {
+			cfg.Port = p
+			log.Infof("Port overridden by PORT environment variable: %d", p)
+		}
 	}
 
 	// In cloud deploy mode, check if we have a valid configuration
