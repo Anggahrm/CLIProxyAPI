@@ -1,5 +1,7 @@
 # Binaries
 cli-proxy-api
+server
+CLIProxyAPI
 *.exe
 
 # Configuration
