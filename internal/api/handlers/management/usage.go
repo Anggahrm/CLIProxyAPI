@@ -1,12 +1,14 @@
 package management
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	log "github.com/sirupsen/logrus"
 )
 
 type usageExportPayload struct {
@@ -69,6 +71,18 @@ func (h *Handler) ImportUsageStatistics(c *gin.Context) {
 	}
 
 	result := h.usageStats.MergeSnapshot(payload.Usage)
+
+	// Flush to database immediately after import if persistence is configured.
+	if pm := usage.GetGlobalPersistenceManager(); pm != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if flushErr := pm.Flush(ctx); flushErr != nil {
+				log.WithError(flushErr).Warn("usage persistence: flush after import failed")
+			}
+		}()
+	}
+
 	snapshot := h.usageStats.Snapshot()
 	c.JSON(http.StatusOK, gin.H{
 		"added":           result.Added,
