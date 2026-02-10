@@ -2,6 +2,7 @@
 cli-proxy-api
 server
 CLIProxyAPI
+cliproxy
 *.exe
 
 # Configuration
@@ -14,6 +15,7 @@ logs/*
 conv/*
 temp/*
 refs/*
+tmp/*
 
 # Storage backends
 pgstore/*
@@ -46,7 +48,9 @@ GEMINI.md
 .bmad/*
 _bmad/*
 _bmad-output/*
+.mcp/cache/
 
 # macOS
 .DS_Store
 ._*
+*.bak

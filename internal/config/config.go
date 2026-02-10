@@ -84,6 +84,13 @@ type Config struct {
 	// GeminiKey defines Gemini API key configurations with optional routing overrides.
 	GeminiKey []GeminiKey `yaml:"gemini-api-key" json:"gemini-api-key"`
 
+	// KiroKey defines a list of Kiro (AWS CodeWhisperer) configurations.
+	KiroKey []KiroKey `yaml:"kiro" json:"kiro"`
+
+	// KiroPreferredEndpoint sets the global default preferred endpoint for all Kiro providers.
+	// Values: "ide" (default, CodeWhisperer) or "cli" (Amazon Q).
+	KiroPreferredEndpoint string `yaml:"kiro-preferred-endpoint" json:"kiro-preferred-endpoint"`
+
 	// Codex defines a list of Codex API key configurations as specified in the YAML configuration file.
 	CodexKey []CodexKey `yaml:"codex-api-key" json:"codex-api-key"`
 
@@ -101,11 +108,12 @@ type Config struct {
 	AmpCode AmpCode `yaml:"ampcode" json:"ampcode"`
 
 	// OAuthExcludedModels defines per-provider global model exclusions applied to OAuth/file-backed auth entries.
+	// Supported channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, qwen, iflow, kiro, github-copilot.
 	OAuthExcludedModels map[string][]string `yaml:"oauth-excluded-models,omitempty" json:"oauth-excluded-models,omitempty"`
 
 	// OAuthModelAlias defines global model name aliases for OAuth/file-backed auth channels.
 	// These aliases affect both model listing and model routing for supported channels:
-	// gemini-cli, vertex, aistudio, antigravity, claude, codex, qwen, iflow.
+	// gemini-cli, vertex, aistudio, antigravity, claude, codex, qwen, iflow, kiro, github-copilot.
 	//
 	// NOTE: This does not apply to existing per-credential model alias features under:
 	// gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, vertex-api-key, and ampcode.
@@ -113,6 +121,11 @@ type Config struct {
 
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
+
+	// IncognitoBrowser enables opening OAuth URLs in incognito/private browsing mode.
+	// This is useful when you want to login with a different account without logging out
+	// from your current session. Default: false.
+	IncognitoBrowser bool `yaml:"incognito-browser" json:"incognito-browser"`
 
 	legacyMigrationPending bool `yaml:"-" json:"-"`
 }
@@ -427,6 +440,35 @@ type GeminiModel struct {
 func (m GeminiModel) GetName() string  { return m.Name }
 func (m GeminiModel) GetAlias() string { return m.Alias }
 
+// KiroKey represents the configuration for Kiro (AWS CodeWhisperer) authentication.
+type KiroKey struct {
+	// TokenFile is the path to the Kiro token file (default: ~/.aws/sso/cache/kiro-auth-token.json)
+	TokenFile string `yaml:"token-file,omitempty" json:"token-file,omitempty"`
+
+	// AccessToken is the OAuth access token for direct configuration.
+	AccessToken string `yaml:"access-token,omitempty" json:"access-token,omitempty"`
+
+	// RefreshToken is the OAuth refresh token for token renewal.
+	RefreshToken string `yaml:"refresh-token,omitempty" json:"refresh-token,omitempty"`
+
+	// ProfileArn is the AWS CodeWhisperer profile ARN.
+	ProfileArn string `yaml:"profile-arn,omitempty" json:"profile-arn,omitempty"`
+
+	// Region is the AWS region (default: us-east-1).
+	Region string `yaml:"region,omitempty" json:"region,omitempty"`
+
+	// ProxyURL optionally overrides the global proxy for this configuration.
+	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// AgentTaskType sets the Kiro API task type. Known values: "vibe", "dev", "chat".
+	// Leave empty to let API use defaults. Different values may inject different system prompts.
+	AgentTaskType string `yaml:"agent-task-type,omitempty" json:"agent-task-type,omitempty"`
+
+	// PreferredEndpoint sets the preferred Kiro API endpoint/quota.
+	// Values: "codewhisperer" (default, IDE quota) or "amazonq" (CLI quota).
+	PreferredEndpoint string `yaml:"preferred-endpoint,omitempty" json:"preferred-endpoint,omitempty"`
+}
+
 // OpenAICompatibility represents the configuration for OpenAI API compatibility
 // with external providers, allowing model aliases to be routed through OpenAI API format.
 type OpenAICompatibility struct {
@@ -533,6 +575,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	cfg.IncognitoBrowser = false // Default to normal browser (AWS uses incognito by force)
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
@@ -603,6 +646,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Sanitize Claude key headers
 	cfg.SanitizeClaudeKeys()
+
+	// Sanitize Kiro keys: trim whitespace from credential fields
+	cfg.SanitizeKiroKeys()
 
 	// Sanitize OpenAI compatibility providers: drop entries without base-url
 	cfg.SanitizeOpenAICompatibility()
@@ -782,6 +828,23 @@ func (cfg *Config) SanitizeClaudeKeys() {
 		entry.Prefix = normalizeModelPrefix(entry.Prefix)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
+	}
+}
+
+// SanitizeKiroKeys trims whitespace from Kiro credential fields.
+func (cfg *Config) SanitizeKiroKeys() {
+	if cfg == nil || len(cfg.KiroKey) == 0 {
+		return
+	}
+	for i := range cfg.KiroKey {
+		entry := &cfg.KiroKey[i]
+		entry.TokenFile = strings.TrimSpace(entry.TokenFile)
+		entry.AccessToken = strings.TrimSpace(entry.AccessToken)
+		entry.RefreshToken = strings.TrimSpace(entry.RefreshToken)
+		entry.ProfileArn = strings.TrimSpace(entry.ProfileArn)
+		entry.Region = strings.TrimSpace(entry.Region)
+		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+		entry.PreferredEndpoint = strings.TrimSpace(entry.PreferredEndpoint)
 	}
 }
 
@@ -1098,8 +1161,13 @@ func getOrCreateMapValue(mapNode *yaml.Node, key string) *yaml.Node {
 
 // mergeMappingPreserve merges keys from src into dst mapping node while preserving
 // key order and comments of existing keys in dst. New keys are only added if their
-// value is non-zero to avoid polluting the config with defaults.
-func mergeMappingPreserve(dst, src *yaml.Node) {
+// value is non-zero and not a known default to avoid polluting the config with defaults.
+func mergeMappingPreserve(dst, src *yaml.Node, path ...[]string) {
+	var currentPath []string
+	if len(path) > 0 {
+		currentPath = path[0]
+	}
+
 	if dst == nil || src == nil {
 		return
 	}
@@ -1113,16 +1181,19 @@ func mergeMappingPreserve(dst, src *yaml.Node) {
 		sk := src.Content[i]
 		sv := src.Content[i+1]
 		idx := findMapKeyIndex(dst, sk.Value)
+		childPath := appendPath(currentPath, sk.Value)
 		if idx >= 0 {
 			// Merge into existing value node (always update, even to zero values)
 			dv := dst.Content[idx+1]
-			mergeNodePreserve(dv, sv)
+			mergeNodePreserve(dv, sv, childPath)
 		} else {
-			// New key: only add if value is non-zero to avoid polluting config with defaults
-			if isZeroValueNode(sv) {
+			// New key: only add if value is non-zero and not a known default
+			candidate := deepCopyNode(sv)
+			pruneKnownDefaultsInNewNode(childPath, candidate)
+			if isKnownDefaultValue(childPath, candidate) {
 				continue
 			}
-			dst.Content = append(dst.Content, deepCopyNode(sk), deepCopyNode(sv))
+			dst.Content = append(dst.Content, deepCopyNode(sk), candidate)
 		}
 	}
 }
@@ -1130,7 +1201,12 @@ func mergeMappingPreserve(dst, src *yaml.Node) {
 // mergeNodePreserve merges src into dst for scalars, mappings and sequences while
 // reusing destination nodes to keep comments and anchors. For sequences, it updates
 // in-place by index.
-func mergeNodePreserve(dst, src *yaml.Node) {
+func mergeNodePreserve(dst, src *yaml.Node, path ...[]string) {
+	var currentPath []string
+	if len(path) > 0 {
+		currentPath = path[0]
+	}
+
 	if dst == nil || src == nil {
 		return
 	}
@@ -1139,7 +1215,7 @@ func mergeNodePreserve(dst, src *yaml.Node) {
 		if dst.Kind != yaml.MappingNode {
 			copyNodeShallow(dst, src)
 		}
-		mergeMappingPreserve(dst, src)
+		mergeMappingPreserve(dst, src, currentPath)
 	case yaml.SequenceNode:
 		// Preserve explicit null style if dst was null and src is empty sequence
 		if dst.Kind == yaml.ScalarNode && dst.Tag == "!!null" && len(src.Content) == 0 {
@@ -1162,7 +1238,7 @@ func mergeNodePreserve(dst, src *yaml.Node) {
 				dst.Content[i] = deepCopyNode(src.Content[i])
 				continue
 			}
-			mergeNodePreserve(dst.Content[i], src.Content[i])
+			mergeNodePreserve(dst.Content[i], src.Content[i], currentPath)
 			if dst.Content[i] != nil && src.Content[i] != nil &&
 				dst.Content[i].Kind == yaml.MappingNode && src.Content[i].Kind == yaml.MappingNode {
 				pruneMissingMapKeys(dst.Content[i], src.Content[i])
@@ -1202,6 +1278,94 @@ func findMapKeyIndex(mapNode *yaml.Node, key string) int {
 		}
 	}
 	return -1
+}
+
+// appendPath appends a key to the path, returning a new slice to avoid modifying the original.
+func appendPath(path []string, key string) []string {
+	if len(path) == 0 {
+		return []string{key}
+	}
+	newPath := make([]string, len(path)+1)
+	copy(newPath, path)
+	newPath[len(path)] = key
+	return newPath
+}
+
+// isKnownDefaultValue returns true if the given node at the specified path
+// represents a known default value that should not be written to the config file.
+// This prevents non-zero defaults from polluting the config.
+func isKnownDefaultValue(path []string, node *yaml.Node) bool {
+	// First check if it's a zero value
+	if isZeroValueNode(node) {
+		return true
+	}
+
+	// Match known non-zero defaults by exact dotted path.
+	if len(path) == 0 {
+		return false
+	}
+
+	fullPath := strings.Join(path, ".")
+
+	// Check string defaults
+	if node.Kind == yaml.ScalarNode && node.Tag == "!!str" {
+		switch fullPath {
+		case "pprof.addr":
+			return node.Value == DefaultPprofAddr
+		case "remote-management.panel-github-repository":
+			return node.Value == DefaultPanelGitHubRepository
+		case "routing.strategy":
+			return node.Value == "round-robin"
+		}
+	}
+
+	// Check integer defaults
+	if node.Kind == yaml.ScalarNode && node.Tag == "!!int" {
+		switch fullPath {
+		case "error-logs-max-files":
+			return node.Value == "10"
+		}
+	}
+
+	return false
+}
+
+// pruneKnownDefaultsInNewNode removes default-valued descendants from a new node
+// before it is appended into the destination YAML tree.
+func pruneKnownDefaultsInNewNode(path []string, node *yaml.Node) {
+	if node == nil {
+		return
+	}
+
+	switch node.Kind {
+	case yaml.MappingNode:
+		filtered := make([]*yaml.Node, 0, len(node.Content))
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			keyNode := node.Content[i]
+			valueNode := node.Content[i+1]
+			if keyNode == nil || valueNode == nil {
+				continue
+			}
+
+			childPath := appendPath(path, keyNode.Value)
+			if isKnownDefaultValue(childPath, valueNode) {
+				continue
+			}
+
+			pruneKnownDefaultsInNewNode(childPath, valueNode)
+			if (valueNode.Kind == yaml.MappingNode || valueNode.Kind == yaml.SequenceNode) &&
+				len(valueNode.Content) == 0 {
+				continue
+			}
+
+			filtered = append(filtered, keyNode, valueNode)
+		}
+		node.Content = filtered
+	case yaml.SequenceNode:
+		for _, child := range node.Content {
+			pruneKnownDefaultsInNewNode(path, child)
+		}
+	}
 }
 
 // isZeroValueNode returns true if the YAML node represents a zero/default value

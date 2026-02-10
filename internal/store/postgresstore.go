@@ -22,7 +22,9 @@ import (
 const (
 	defaultConfigTable = "config_store"
 	defaultAuthTable   = "auth_store"
+	defaultUsageTable  = "usage_store"
 	defaultConfigKey   = "config"
+	defaultUsageKey    = "usage"
 )
 
 // PostgresStoreConfig captures configuration required to initialize a Postgres-backed store.
@@ -31,6 +33,7 @@ type PostgresStoreConfig struct {
 	Schema      string
 	ConfigTable string
 	AuthTable   string
+	UsageTable  string
 	SpoolDir    string
 }
 
@@ -57,6 +60,9 @@ func NewPostgresStore(ctx context.Context, cfg PostgresStoreConfig) (*PostgresSt
 	}
 	if cfg.AuthTable == "" {
 		cfg.AuthTable = defaultAuthTable
+	}
+	if cfg.UsageTable == "" {
+		cfg.UsageTable = defaultUsageTable
 	}
 
 	spoolRoot := strings.TrimSpace(cfg.SpoolDir)
@@ -139,6 +145,17 @@ func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 		)
 	`, authTable)); err != nil {
 		return fmt.Errorf("postgres store: create auth table: %w", err)
+	}
+	usageTable := s.fullTableName(s.cfg.UsageTable)
+	if _, err := s.db.ExecContext(ctx, fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s (
+			id TEXT PRIMARY KEY,
+			content JSONB NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)
+	`, usageTable)); err != nil {
+		return fmt.Errorf("postgres store: create usage table: %w", err)
 	}
 	return nil
 }
@@ -662,4 +679,42 @@ func normalizeLineEndings(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = strings.ReplaceAll(s, "\r", "\n")
 	return s
+}
+
+// PersistUsage saves a JSON-serializable usage snapshot to PostgreSQL.
+func (s *PostgresStore) PersistUsage(ctx context.Context, data []byte) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("postgres store: not initialized")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	query := fmt.Sprintf(`
+		INSERT INTO %s (id, content, created_at, updated_at)
+		VALUES ($1, $2, NOW(), NOW())
+		ON CONFLICT (id)
+		DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()
+	`, s.fullTableName(s.cfg.UsageTable))
+	if _, err := s.db.ExecContext(ctx, query, defaultUsageKey, json.RawMessage(data)); err != nil {
+		return fmt.Errorf("postgres store: upsert usage: %w", err)
+	}
+	return nil
+}
+
+// LoadUsage retrieves the stored usage snapshot from PostgreSQL. Returns nil if no data exists.
+func (s *PostgresStore) LoadUsage(ctx context.Context) ([]byte, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("postgres store: not initialized")
+	}
+
+	query := fmt.Sprintf("SELECT content FROM %s WHERE id = $1", s.fullTableName(s.cfg.UsageTable))
+	var content string
+	err := s.db.QueryRowContext(ctx, query, defaultUsageKey).Scan(&content)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("postgres store: load usage: %w", err)
+	}
+	return []byte(content), nil
 }
