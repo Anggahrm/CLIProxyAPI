@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,6 +60,25 @@ func setKiroIncognitoMode(cfg *config.Config, useIncognito, noIncognito bool) {
 	} else {
 		cfg.IncognitoBrowser = true // Kiro default
 	}
+}
+
+func applyRuntimePortOverride(cfg *config.Config, lookupEnv func(keys ...string) (string, bool)) {
+	if cfg == nil || lookupEnv == nil {
+		return
+	}
+	portRaw, ok := lookupEnv("PORT", "port")
+	if !ok {
+		return
+	}
+	port, err := strconv.Atoi(portRaw)
+	if err != nil || port < 1 || port > 65535 {
+		log.WithField("PORT", portRaw).Warn("invalid PORT environment value; keeping configured port")
+		return
+	}
+	if cfg.Port != port {
+		log.Infof("overriding listen port from environment: %d", port)
+	}
+	cfg.Port = port
 }
 
 // main is the entry point of the application.
@@ -417,6 +437,7 @@ func main() {
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
+	applyRuntimePortOverride(cfg, lookupEnv)
 
 	// In cloud deploy mode, check if we have a valid configuration
 	var configFileExists bool
