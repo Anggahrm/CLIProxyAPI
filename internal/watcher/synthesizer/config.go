@@ -164,6 +164,9 @@ func (s *ConfigSynthesizer) synthesizeCodexKeys(ctx *SynthesisContext) []*coreau
 		if ck.BaseURL != "" {
 			attrs["base_url"] = ck.BaseURL
 		}
+		if ck.Websockets {
+			attrs["websockets"] = "true"
+		}
 		if hash := diff.ComputeCodexModelsHash(ck.Models); hash != "" {
 			attrs["models_hash"] = hash
 		}
@@ -316,7 +319,7 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
-		ApplyAuthExcludedModelsMeta(a, cfg, nil, "apikey")
+		ApplyAuthExcludedModelsMeta(a, cfg, compat.ExcludedModels, "apikey")
 		out = append(out, a)
 	}
 	return out
